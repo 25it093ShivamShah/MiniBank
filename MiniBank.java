@@ -5,32 +5,76 @@ public class MiniBank {
     enum MenuOption { OPEN_ACCOUNT, DEPOSIT, WITHDRAW, TRANSFER, EXIT; }
 
     public static void main(String[] args) {
-        Scanner sc = new Scanner(System.in);
         BankInfo bi = new BankInfo("MiniBank", "Main Branch");
         System.out.println("Welcome to " + bi.name() + " - " + bi.branch());
 
-        int choice = -1;
-        while (choice != MenuOption.EXIT.ordinal() + 1) {
-            System.out.println("\nMenu:");
-            System.out.println("1. Open Account");
-            System.out.println("2. Deposit");
-            System.out.println("3. Withdraw");
-            System.out.println("4. Transfer");
-            System.out.println("5. Exit");
-            System.out.print("Enter choice: ");
-            choice = sc.nextInt();
+        Account[] accounts = new Account[3];
+        accounts[0] = new Account("Alice", 1000);
+        accounts[1] = new Account("Bob", 500);
+        accounts[2] = new Account("Charlie");
 
-            String result = switch (choice) {
-                case 1 -> "Open Account — to be implemented";
-                case 2 -> "Deposit — to be implemented";
-                case 3 -> "Withdraw — to be implemented";
-                case 4 -> "Transfer — to be implemented";
-                case 5 -> "Exit selected";
-                default -> "Invalid Choice";
-            };
-            System.out.println(result);
+        accounts[0].deposit(500);
+        accounts[1].withdraw(200);
+        accounts[2].deposit(1000);
+
+        for (Account acc : accounts) {
+            System.out.println(acc.getAccountNumber() + " | " + acc.getOwnerName() + " | Balance: " + acc.getBalance());
         }
-        System.out.println("\nThank you for using MiniBank. Goodbye!");
-        sc.close();
     }
+}
+
+class Customer {
+    private String name;
+    private String email;
+    private String mobile;
+    private final String customerId;
+    private static long customerCounter = 100;
+
+    public Customer(String name, String email, String mobile) {
+        this.name = name;
+        this.email = email;
+        this.mobile = mobile;
+        this.customerId = generateCustomerId();
+    }
+
+    private static String generateCustomerId() {
+        return "CUST" + (++customerCounter);
+    }
+
+    public String getName() { return name; }
+    public String getEmail() { return email; }
+    public String getMobile() { return mobile; }
+    public String getCustomerId() { return customerId; }
+}
+
+class Account {
+    private final String accountNumber;
+    private String ownerName;
+    private long balance;
+    private boolean active;
+    private static int counter = 0;
+
+    public Account(String ownerName, long openingBalance) {
+        this.accountNumber = "AC" + String.format("%04d", ++counter);
+        this.ownerName = ownerName;
+        this.balance = openingBalance;
+        this.active = true;
+    }
+
+    public Account(String ownerName) {
+        this(ownerName, 0);
+    }
+
+    public void deposit(long amount) { balance += amount; }
+    public boolean withdraw(long amount) {
+        if (balance >= amount) {
+            balance -= amount;
+            return true;
+        }
+        return false;
+    }
+
+    public String getAccountNumber() { return accountNumber; }
+    public String getOwnerName() { return ownerName; }
+    public long getBalance() { return balance; }
 }
