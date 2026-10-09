@@ -71,6 +71,7 @@ class StatementFormatter {
         sb.append("Account Number : ").append(account.getAccountNumber()).append("\n");
         sb.append("Account Holder : ").append(account.getOwnerName()).append("\n");
         sb.append("Current Balance: Rs. ").append(account.getBalance()).append("\n");
+        sb.append("Interest Rate  : ").append(account.interestRate()).append("%\n");
         sb.append("Account Status : ").append(account.isActive() ? "Active" : "Inactive").append("\n");
         sb.append("====================================");
         return sb.toString();
@@ -159,10 +160,10 @@ class Customer implements Cloneable {
     }
 }
 
-class Account {
+abstract class Account {
     private final String accountNumber;
     private String ownerName;
-    private long balance;
+    protected long balance;
     private boolean active;
     private static long accountCounter = 0;
 
@@ -189,6 +190,9 @@ class Account {
         this(ownerName, 0);
     }
 
+    public abstract double interestRate();
+    public abstract boolean canWithdraw(long amount);
+
     public void deposit(long amount) {
         if (amount > 0) {
             balance += amount;
@@ -196,7 +200,7 @@ class Account {
     }
 
     public boolean withdraw(long amount) {
-        if (amount > 0 && balance >= amount) {
+        if (amount > 0 && canWithdraw(amount)) {
             balance -= amount;
             return true;
         }
@@ -235,6 +239,70 @@ class Account {
     }
 }
 
+class SavingsAccount extends Account {
+    private long minBalance;
+
+    public SavingsAccount(String ownerName, long balance, long minBalance) {
+        super(ownerName, balance);
+        this.minBalance = minBalance;
+    }
+
+    public SavingsAccount(String ownerName, long balance) {
+        this(ownerName, balance, 1000);
+    }
+
+    public double interestRate() {
+        return 4.0;
+    }
+
+    public boolean canWithdraw(long amount) {
+        return (balance - amount) >= minBalance;
+    }
+
+    public long getMinBalance() {
+        return minBalance;
+    }
+}
+
+class CurrentAccount extends Account {
+    private long overdraftLimit;
+
+    public CurrentAccount(String ownerName, long balance, long overdraftLimit) {
+        super(ownerName, balance);
+        this.overdraftLimit = overdraftLimit;
+    }
+
+    public CurrentAccount(String ownerName, long balance) {
+        this(ownerName, balance, 5000);
+    }
+
+    public double interestRate() {
+        return 0.0;
+    }
+
+    public boolean canWithdraw(long amount) {
+        return (balance - amount) >= -overdraftLimit;
+    }
+
+    public long getOverdraftLimit() {
+        return overdraftLimit;
+    }
+}
+
+class FixedDepositAccount extends Account {
+    public FixedDepositAccount(String ownerName, long balance) {
+        super(ownerName, balance);
+    }
+
+    public double interestRate() {
+        return 7.0;
+    }
+
+    public boolean canWithdraw(long amount) {
+        return false;
+    }
+}
+
 public class MiniBank {
     public static void printMenu() {
         System.out.println("\n--- MiniBank Menu ---");
@@ -250,24 +318,22 @@ public class MiniBank {
         BankInfo info = new BankInfo("State Bank", "Main Branch");
         System.out.println(info);
 
-        System.out.println("\n--- Testing Validations ---");
-        System.out.println("Mobile 9876543210: " + Validator.isValidMobile("9876543210"));
-        System.out.println("Mobile 12345: " + Validator.isValidMobile("12345"));
-        System.out.println("Email test@bank.com: " + Validator.isValidEmail("test@bank.com"));
-        System.out.println("Email invalid-email: " + Validator.isValidEmail("invalid-email"));
-        System.out.println("PAN ABCDE1234F: " + Validator.isValidPan("ABCDE1234F"));
-        System.out.println("PAN 12345: " + Validator.isValidPan("12345"));
-        System.out.println("IFSC SBIN0001234: " + Validator.isValidIfsc("SBIN0001234"));
-        System.out.println("IFSC INVALIDIFSC: " + Validator.isValidIfsc("INVALIDIFSC"));
+        Account[] accounts = new Account[3];
+        accounts[0] = new SavingsAccount("Riya", 5000, 1000);
+        accounts[1] = new CurrentAccount("Aman", 2000, 3000);
+        accounts[2] = new FixedDepositAccount("Pooja", 10000);
 
-        System.out.println("\n--- Testing CommandParser ---");
-        Command cmd = CommandParser.parse("DEPOSIT AC0001 500");
-        if (cmd != null) {
-            System.out.println("Parsed Command: Type=" + cmd.type() + ", Acc=" + cmd.accountNumber() + ", Amount=" + cmd.amount());
+        System.out.println("\n--- Polymorphic Account Rates & Withdraw Checks ---");
+        for (Account acc : accounts) {
+            System.out.println("Account: " + acc.getAccountNumber() + " | Type: " + acc.getClass().getSimpleName() + " | Rate: " + acc.interestRate() + "%");
+
+            if (acc instanceof CurrentAccount ca) {
+                System.out.println("-> Detected CurrentAccount with Overdraft Limit: " + ca.getOverdraftLimit());
+            }
+
+            boolean canTake3000 = acc.canWithdraw(3000);
+            System.out.println("-> Can withdraw 3000: " + canTake3000);
         }
-
-        Account acc = new Account("AC0001", "Riya", 4500);
-        System.out.println("\n" + StatementFormatter.buildStatement(acc));
 
         Scanner sc = new Scanner(System.in);
         boolean loop = true;
