@@ -1,6 +1,7 @@
 import java.util.Objects;
 import java.util.Scanner;
 import java.util.regex.Pattern;
+import static java.lang.Math.max;
 
 record BankInfo(String name, String branch) {}
 
@@ -19,6 +20,25 @@ enum TransactionType {
 }
 
 record Command(TransactionType type, String accountNumber, long amount) {}
+
+interface Transactable {
+    void deposit(long amount);
+    boolean withdraw(long amount);
+}
+
+interface InterestBearing {
+    double interestRate();
+    default double yearlyInterest(long balance) {
+        return (balance * interestRate()) / 100.0;
+    }
+}
+
+interface Premium {}
+
+@FunctionalInterface
+interface WithdrawRule {
+    boolean allow(Account account, long amount);
+}
 
 class Validator {
     private static final Pattern MOBILE_PATTERN = Pattern.compile("^[6-9][0-9]{9}$");
@@ -72,6 +92,7 @@ class StatementFormatter {
         sb.append("Account Holder : ").append(account.getOwnerName()).append("\n");
         sb.append("Current Balance: Rs. ").append(account.getBalance()).append("\n");
         sb.append("Interest Rate  : ").append(account.interestRate()).append("%\n");
+        sb.append("Yearly Interest: Rs. ").append(account.yearlyInterest(account.getBalance())).append("\n");
         sb.append("Account Status : ").append(account.isActive() ? "Active" : "Inactive").append("\n");
         sb.append("====================================");
         return sb.toString();
@@ -160,7 +181,7 @@ class Customer implements Cloneable {
     }
 }
 
-abstract class Account {
+abstract class Account implements Transactable, InterestBearing {
     private final String accountNumber;
     private String ownerName;
     protected long balance;
@@ -175,14 +196,14 @@ abstract class Account {
     public Account(String ownerName, long balance) {
         this.accountNumber = generateAccountNumber();
         this.ownerName = ownerName;
-        this.balance = balance < 0 ? 0 : balance;
+        this.balance = max(0, balance);
         this.active = true;
     }
 
     public Account(String accountNumber, String ownerName, long balance) {
         this.accountNumber = accountNumber;
         this.ownerName = ownerName;
-        this.balance = balance < 0 ? 0 : balance;
+        this.balance = max(0, balance);
         this.active = true;
     }
 
@@ -264,7 +285,7 @@ class SavingsAccount extends Account {
     }
 }
 
-class CurrentAccount extends Account {
+class CurrentAccount extends Account implements Premium {
     private long overdraftLimit;
 
     public CurrentAccount(String ownerName, long balance, long overdraftLimit) {
@@ -318,22 +339,26 @@ public class MiniBank {
         BankInfo info = new BankInfo("State Bank", "Main Branch");
         System.out.println(info);
 
-        Account[] accounts = new Account[3];
-        accounts[0] = new SavingsAccount("Riya", 5000, 1000);
-        accounts[1] = new CurrentAccount("Aman", 2000, 3000);
-        accounts[2] = new FixedDepositAccount("Pooja", 10000);
+        SavingsAccount sa = new SavingsAccount("Riya", 5000, 1000);
+        CurrentAccount ca = new CurrentAccount("Aman", 2000, 3000);
 
-        System.out.println("\n--- Polymorphic Account Rates & Withdraw Checks ---");
-        for (Account acc : accounts) {
-            System.out.println("Account: " + acc.getAccountNumber() + " | Type: " + acc.getClass().getSimpleName() + " | Rate: " + acc.interestRate() + "%");
-
-            if (acc instanceof CurrentAccount ca) {
-                System.out.println("-> Detected CurrentAccount with Overdraft Limit: " + ca.getOverdraftLimit());
-            }
-
-            boolean canTake3000 = acc.canWithdraw(3000);
-            System.out.println("-> Can withdraw 3000: " + canTake3000);
+        System.out.println("\n--- Testing Interfaces & Default Methods ---");
+        System.out.println("Savings yearly interest on Rs. 5000: " + sa.yearlyInterest(sa.getBalance()));
+        if (ca instanceof Premium) {
+            System.out.println("CurrentAccount " + ca.getAccountNumber() + " has Premium marker interface");
         }
+
+        System.out.println("\n--- Testing WithdrawRule (Anonymous Class vs Lambda) ---");
+        WithdrawRule anonRule = new WithdrawRule() {
+            public boolean allow(Account account, long amount) {
+                return account.canWithdraw(amount);
+            }
+        };
+
+        WithdrawRule lambdaRule = (account, amount) -> account.canWithdraw(amount);
+
+        System.out.println("Anonymous allow(sa, 3000): " + anonRule.allow(sa, 3000));
+        System.out.println("Lambda allow(sa, 3000): " + lambdaRule.allow(sa, 3000));
 
         Scanner sc = new Scanner(System.in);
         boolean loop = true;
