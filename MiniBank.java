@@ -1,7 +1,30 @@
+import java.lang.annotation.ElementType;
+import java.lang.annotation.Retention;
+import java.lang.annotation.RetentionPolicy;
+import java.lang.annotation.Target;
+import java.lang.reflect.Field;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Objects;
 import java.util.Scanner;
 import java.util.regex.Pattern;
 import static java.lang.Math.max;
+
+@Target(ElementType.FIELD)
+@Retention(RetentionPolicy.RUNTIME)
+@interface Id {}
+
+@Target(ElementType.FIELD)
+@Retention(RetentionPolicy.RUNTIME)
+@interface Positive {
+    String message() default "must be > 0";
+}
+
+@Target(ElementType.FIELD)
+@Retention(RetentionPolicy.RUNTIME)
+@interface MaxLength {
+    int value();
+}
 
 record BankInfo(String name, String branch) {}
 
@@ -38,6 +61,45 @@ interface Premium {}
 @FunctionalInterface
 interface WithdrawRule {
     boolean allow(Account account, long amount);
+}
+
+class AnnotationValidator {
+    public static String[] validate(Object obj) {
+        if (obj == null) return new String[0];
+        List<String> errors = new ArrayList<>();
+        Class<?> clazz = obj.getClass();
+
+        while (clazz != null && clazz != Object.class) {
+            Field[] fields = clazz.getDeclaredFields();
+            for (Field field : fields) {
+                field.setAccessible(true);
+                try {
+                    Object val = field.get(obj);
+
+                    if (field.isAnnotationPresent(Positive.class)) {
+                        Positive pos = field.getAnnotation(Positive.class);
+                        if (val instanceof Number num) {
+                            if (num.longValue() <= 0) {
+                                errors.add(pos.message());
+                            }
+                        }
+                    }
+
+                    if (field.isAnnotationPresent(MaxLength.class)) {
+                        MaxLength ml = field.getAnnotation(MaxLength.class);
+                        if (val instanceof String str) {
+                            if (str.length() > ml.value()) {
+                                errors.add(field.getName() + " length exceeds maximum of " + ml.value());
+                            }
+                        }
+                    }
+                } catch (IllegalAccessException e) {
+                }
+            }
+            clazz = clazz.getSuperclass();
+        }
+        return errors.toArray(new String[0]);
+    }
 }
 
 class Validator {
@@ -100,7 +162,9 @@ class StatementFormatter {
 }
 
 class Customer implements Cloneable {
+    @Id
     private final String customerId;
+    @MaxLength(50)
     private String name;
     private String email;
     private String mobile;
@@ -130,6 +194,7 @@ class Customer implements Cloneable {
             return pincode;
         }
 
+        @Override
         public String toString() {
             return line + ", " + city + " - " + pincode;
         }
@@ -176,14 +241,18 @@ class Customer implements Cloneable {
         this.address = address;
     }
 
+    @Override
     public Object clone() throws CloneNotSupportedException {
         return super.clone();
     }
 }
 
 abstract class Account implements Transactable, InterestBearing {
+    @Id
     private final String accountNumber;
+    @MaxLength(50)
     private String ownerName;
+    @Positive
     protected long balance;
     private boolean active;
     private static long accountCounter = 0;
@@ -196,14 +265,14 @@ abstract class Account implements Transactable, InterestBearing {
     public Account(String ownerName, long balance) {
         this.accountNumber = generateAccountNumber();
         this.ownerName = ownerName;
-        this.balance = max(0, balance);
+        this.balance = balance;
         this.active = true;
     }
 
     public Account(String accountNumber, String ownerName, long balance) {
         this.accountNumber = accountNumber;
         this.ownerName = ownerName;
-        this.balance = max(0, balance);
+        this.balance = balance;
         this.active = true;
     }
 
@@ -211,15 +280,18 @@ abstract class Account implements Transactable, InterestBearing {
         this(ownerName, 0);
     }
 
+    @Override
     public abstract double interestRate();
     public abstract boolean canWithdraw(long amount);
 
+    @Override
     public void deposit(long amount) {
         if (amount > 0) {
             balance += amount;
         }
     }
 
+    @Override
     public boolean withdraw(long amount) {
         if (amount > 0 && canWithdraw(amount)) {
             balance -= amount;
@@ -244,10 +316,12 @@ abstract class Account implements Transactable, InterestBearing {
         return active;
     }
 
+    @Override
     public String toString() {
         return accountNumber + " | " + ownerName + " | " + balance;
     }
 
+    @Override
     public boolean equals(Object o) {
         if (this == o) return true;
         if (o == null || getClass() != o.getClass()) return false;
@@ -255,6 +329,7 @@ abstract class Account implements Transactable, InterestBearing {
         return Objects.equals(accountNumber, account.accountNumber);
     }
 
+    @Override
     public int hashCode() {
         return Objects.hash(accountNumber);
     }
@@ -272,10 +347,12 @@ class SavingsAccount extends Account {
         this(ownerName, balance, 1000);
     }
 
+    @Override
     public double interestRate() {
         return 4.0;
     }
 
+    @Override
     public boolean canWithdraw(long amount) {
         return (balance - amount) >= minBalance;
     }
@@ -297,10 +374,12 @@ class CurrentAccount extends Account implements Premium {
         this(ownerName, balance, 5000);
     }
 
+    @Override
     public double interestRate() {
         return 0.0;
     }
 
+    @Override
     public boolean canWithdraw(long amount) {
         return (balance - amount) >= -overdraftLimit;
     }
@@ -315,10 +394,12 @@ class FixedDepositAccount extends Account {
         super(ownerName, balance);
     }
 
+    @Override
     public double interestRate() {
         return 7.0;
     }
 
+    @Override
     public boolean canWithdraw(long amount) {
         return false;
     }
@@ -339,26 +420,16 @@ public class MiniBank {
         BankInfo info = new BankInfo("State Bank", "Main Branch");
         System.out.println(info);
 
-        SavingsAccount sa = new SavingsAccount("Riya", 5000, 1000);
-        CurrentAccount ca = new CurrentAccount("Aman", 2000, 3000);
-
-        System.out.println("\n--- Testing Interfaces & Default Methods ---");
-        System.out.println("Savings yearly interest on Rs. 5000: " + sa.yearlyInterest(sa.getBalance()));
-        if (ca instanceof Premium) {
-            System.out.println("CurrentAccount " + ca.getAccountNumber() + " has Premium marker interface");
+        SavingsAccount invalidAcc = new SavingsAccount("Riya", -100, 1000);
+        System.out.println("\n--- Testing Custom Annotations via Reflection ---");
+        String[] errs = AnnotationValidator.validate(invalidAcc);
+        for (String err : errs) {
+            System.out.println("Validation Error on invalidAcc: " + err);
         }
 
-        System.out.println("\n--- Testing WithdrawRule (Anonymous Class vs Lambda) ---");
-        WithdrawRule anonRule = new WithdrawRule() {
-            public boolean allow(Account account, long amount) {
-                return account.canWithdraw(amount);
-            }
-        };
-
-        WithdrawRule lambdaRule = (account, amount) -> account.canWithdraw(amount);
-
-        System.out.println("Anonymous allow(sa, 3000): " + anonRule.allow(sa, 3000));
-        System.out.println("Lambda allow(sa, 3000): " + lambdaRule.allow(sa, 3000));
+        SavingsAccount validAcc = new SavingsAccount("Aman", 5000, 1000);
+        String[] validErrs = AnnotationValidator.validate(validAcc);
+        System.out.println("Validation errors on validAcc: " + validErrs.length);
 
         Scanner sc = new Scanner(System.in);
         boolean loop = true;
