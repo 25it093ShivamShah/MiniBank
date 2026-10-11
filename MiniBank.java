@@ -4,9 +4,14 @@ import java.lang.annotation.RetentionPolicy;
 import java.lang.annotation.Target;
 import java.lang.reflect.Field;
 import java.util.ArrayList;
+import java.util.LinkedList;
 import java.util.List;
 import java.util.Objects;
+import java.util.Queue;
 import java.util.Scanner;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.regex.Pattern;
 import static java.lang.Math.max;
 
@@ -90,6 +95,57 @@ class AccountWorker implements Runnable {
             } catch (InvalidAmountException e) {
             }
         }
+    }
+}
+
+class TransactionProcessor {
+    private final ExecutorService executor;
+
+    public TransactionProcessor(int poolSize) {
+        this.executor = Executors.newFixedThreadPool(poolSize);
+    }
+
+    public void submit(Runnable task) {
+        executor.execute(task);
+    }
+
+    public void stop() {
+        executor.shutdown();
+        try {
+            if (!executor.awaitTermination(5, TimeUnit.SECONDS)) {
+                executor.shutdownNow();
+            }
+        } catch (InterruptedException e) {
+            executor.shutdownNow();
+        }
+    }
+}
+
+class TransactionBuffer {
+    private final Queue<String> queue = new LinkedList<>();
+    private final int capacity;
+
+    public TransactionBuffer(int capacity) {
+        this.capacity = capacity;
+    }
+
+    public synchronized void produce(String tx) throws InterruptedException {
+        while (queue.size() == capacity) {
+            wait();
+        }
+        queue.add(tx);
+        System.out.println("Produced transaction: " + tx);
+        notifyAll();
+    }
+
+    public synchronized String consume() throws InterruptedException {
+        while (queue.isEmpty()) {
+            wait();
+        }
+        String tx = queue.poll();
+        System.out.println("Consumed transaction: " + tx);
+        notifyAll();
+        return tx;
     }
 }
 
@@ -376,13 +432,19 @@ abstract class Account implements Transactable, InterestBearing {
         if (to == null) {
             throw new AccountNotFoundException("Destination account not found.");
         }
-        try {
-            this.withdraw(amount);
-            to.deposit(amount);
-        } catch (InsufficientFundsException | InvalidAmountException e) {
-            throw e;
-        } finally {
-            System.out.println("Transfer execution attempt finished from " + this.accountNumber + " to " + to.getAccountNumber());
+        
+        Account firstLock = this.accountNumber.compareTo(to.accountNumber) < 0 ? this : to;
+        Account secondLock = this.accountNumber.compareTo(to.accountNumber) < 0 ? to : this;
+
+        synchronized (firstLock) {
+            synchronized (secondLock) {
+                try {
+                    this.withdraw(amount);
+                    to.deposit(amount);
+                } catch (InsufficientFundsException | InvalidAmountException e) {
+                    throw e;
+                }
+            }
         }
     }
 
@@ -506,30 +568,80 @@ public class MiniBank {
         BankInfo info = new BankInfo("State Bank", "Main Branch");
         System.out.println(info);
 
-        SavingsAccount threadAcc = new SavingsAccount("SharedAccount", 0, 0);
-        int threadCount = 10;
-        int depositsPerThread = 1000;
-        long depositAmount = 1;
+        SavingsAccount poolAcc = new SavingsAccount("PoolTest", 1000, 0);
+        TransactionProcessor tp = new TransactionProcessor(4);
 
-        Thread[] threads = new Thread[threadCount];
-
-        System.out.println("\n--- Starting Multithreaded Deposits ---");
-        for (int i = 0; i < threadCount; i++) {
-            threads[i] = new Thread(new AccountWorker(threadAcc, depositsPerThread, depositAmount), "Worker-" + (i + 1));
-            System.out.println("Starting thread: " + threads[i].getName() + " | State: " + threads[i].getState());
-            threads[i].start();
+        System.out.println("\n--- Running Thread Pool Transactions ---");
+        for (int i = 0; i < 8; i++) {
+            final int id = i + 1;
+            tp.submit(() -> {
+                try {
+                    poolAcc.deposit(100);
+                    System.out.println("Task " + id + " deposited 100 by " + Thread.currentThread().getName());
+                } catch (InvalidAmountException e) {
+                }
+            });
         }
+        tp.stop();
+        System.out.println("Balance after pool tasks: Rs. " + poolAcc.getBalance());
 
-        for (int i = 0; i < threadCount; i++) {
+        System.out.println("\n--- Running Producer-Consumer Queue ---");
+        TransactionBuffer buffer = new TransactionBuffer(2);
+        Thread producer = new Thread(() -> {
             try {
-                threads[i].join();
+                buffer.produce("TX_DEP_100");
+                buffer.produce("TX_WDR_50");
+                buffer.produce("TX_TRF_30");
             } catch (InterruptedException e) {
-                System.out.println("Thread interrupted: " + threads[i].getName());
             }
+        });
+
+        Thread consumer = new Thread(() -> {
+            try {
+                for (int i = 0; i < 3; i++) {
+                    buffer.consume();
+                }
+            } catch (InterruptedException e) {
+            }
+        });
+
+        producer.start();
+        consumer.start();
+
+        try {
+            producer.join();
+            consumer.join();
+        } catch (InterruptedException e) {
         }
 
-        System.out.println("All threads finished execution.");
-        System.out.println("Final thread-safe balance: Rs. " + threadAcc.getBalance() + " (Expected: " + (threadCount * depositsPerThread * depositAmount) + ")");
+        System.out.println("\n--- Testing Deadlock-Free Transfer ---");
+        SavingsAccount a = new SavingsAccount("Alice", 5000, 0);
+        SavingsAccount b = new SavingsAccount("Bob", 5000, 0);
+
+        Thread t1 = new Thread(() -> {
+            try {
+                a.transfer(b, 500);
+            } catch (BankException e) {
+            }
+        });
+
+        Thread t2 = new Thread(() -> {
+            try {
+                b.transfer(a, 300);
+            } catch (BankException e) {
+            }
+        });
+
+        t1.start();
+        t2.start();
+
+        try {
+            t1.join();
+            t2.join();
+        } catch (InterruptedException e) {
+        }
+
+        System.out.println("Transfer complete without deadlock. Balances: Alice=" + a.getBalance() + ", Bob=" + b.getBalance());
 
         Scanner sc = new Scanner(System.in);
         boolean loop = true;
