@@ -71,6 +71,28 @@ class BankAuditSession implements AutoCloseable {
     }
 }
 
+class AccountWorker implements Runnable {
+    private Account account;
+    private int times;
+    private long amount;
+
+    public AccountWorker(Account account, int times, long amount) {
+        this.account = account;
+        this.times = times;
+        this.amount = amount;
+    }
+
+    @Override
+    public void run() {
+        for (int i = 0; i < times; i++) {
+            try {
+                account.deposit(amount);
+            } catch (InvalidAmountException e) {
+            }
+        }
+    }
+}
+
 record BankInfo(String name, String branch) {}
 
 enum MenuOption {
@@ -330,7 +352,7 @@ abstract class Account implements Transactable, InterestBearing {
     public abstract boolean canWithdraw(long amount);
 
     @Override
-    public void deposit(long amount) throws InvalidAmountException {
+    public synchronized void deposit(long amount) throws InvalidAmountException {
         if (amount <= 0) {
             throw new InvalidAmountException("Deposit amount must be greater than zero.");
         }
@@ -338,7 +360,7 @@ abstract class Account implements Transactable, InterestBearing {
     }
 
     @Override
-    public boolean withdraw(long amount) throws InsufficientFundsException, InvalidAmountException {
+    public synchronized boolean withdraw(long amount) throws InsufficientFundsException, InvalidAmountException {
         if (amount <= 0) {
             throw new InvalidAmountException("Withdrawal amount must be greater than zero.");
         }
@@ -372,7 +394,7 @@ abstract class Account implements Transactable, InterestBearing {
         return ownerName;
     }
 
-    public long getBalance() {
+    public synchronized long getBalance() {
         return balance;
     }
 
@@ -484,35 +506,30 @@ public class MiniBank {
         BankInfo info = new BankInfo("State Bank", "Main Branch");
         System.out.println(info);
 
-        SavingsAccount acc1 = new SavingsAccount("Riya", 1000, 500);
-        SavingsAccount acc2 = new SavingsAccount("Aman", 2000, 500);
+        SavingsAccount threadAcc = new SavingsAccount("SharedAccount", 0, 0);
+        int threadCount = 10;
+        int depositsPerThread = 1000;
+        long depositAmount = 1;
 
-        System.out.println("\n--- Testing Custom Exceptions ---");
-        try {
-            acc1.withdraw(5000);
-        } catch (InsufficientFundsException e) {
-            System.out.println("Caught InsufficientFundsException: " + e.getMessage() + " (Shortfall: Rs. " + e.getShortfall() + ")");
-        } catch (InvalidAmountException e) {
-            System.out.println("Caught InvalidAmountException: " + e.getMessage());
+        Thread[] threads = new Thread[threadCount];
+
+        System.out.println("\n--- Starting Multithreaded Deposits ---");
+        for (int i = 0; i < threadCount; i++) {
+            threads[i] = new Thread(new AccountWorker(threadAcc, depositsPerThread, depositAmount), "Worker-" + (i + 1));
+            System.out.println("Starting thread: " + threads[i].getName() + " | State: " + threads[i].getState());
+            threads[i].start();
         }
 
-        try {
-            acc1.deposit(-200);
-        } catch (InvalidAmountException e) {
-            System.out.println("Caught InvalidAmountException: " + e.getMessage());
+        for (int i = 0; i < threadCount; i++) {
+            try {
+                threads[i].join();
+            } catch (InterruptedException e) {
+                System.out.println("Thread interrupted: " + threads[i].getName());
+            }
         }
 
-        try {
-            acc1.transfer(acc2, 300);
-            System.out.println("Transfer successful. Acc1 balance: " + acc1.getBalance() + ", Acc2 balance: " + acc2.getBalance());
-        } catch (BankException e) {
-            System.out.println("Transfer failed: " + e.getMessage());
-        }
-
-        System.out.println("\n--- Testing Try-With-Resources ---");
-        try (BankAuditSession session = new BankAuditSession("AUDIT-901")) {
-            System.out.println("Executing verified operations inside session...");
-        }
+        System.out.println("All threads finished execution.");
+        System.out.println("Final thread-safe balance: Rs. " + threadAcc.getBalance() + " (Expected: " + (threadCount * depositsPerThread * depositAmount) + ")");
 
         Scanner sc = new Scanner(System.in);
         boolean loop = true;
