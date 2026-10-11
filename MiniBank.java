@@ -26,6 +26,51 @@ import static java.lang.Math.max;
     int value();
 }
 
+class BankException extends Exception {
+    public BankException(String message) {
+        super(message);
+    }
+}
+
+class InsufficientFundsException extends BankException {
+    private final long shortfall;
+
+    public InsufficientFundsException(String message, long shortfall) {
+        super(message);
+        this.shortfall = shortfall;
+    }
+
+    public long getShortfall() {
+        return shortfall;
+    }
+}
+
+class AccountNotFoundException extends BankException {
+    public AccountNotFoundException(String message) {
+        super(message);
+    }
+}
+
+class InvalidAmountException extends BankException {
+    public InvalidAmountException(String message) {
+        super(message);
+    }
+}
+
+class BankAuditSession implements AutoCloseable {
+    private final String sessionId;
+
+    public BankAuditSession(String sessionId) {
+        this.sessionId = sessionId;
+        System.out.println("Audit session opened: " + sessionId);
+    }
+
+    @Override
+    public void close() {
+        System.out.println("Audit session closed safely: " + sessionId);
+    }
+}
+
 record BankInfo(String name, String branch) {}
 
 enum MenuOption {
@@ -45,8 +90,8 @@ enum TransactionType {
 record Command(TransactionType type, String accountNumber, long amount) {}
 
 interface Transactable {
-    void deposit(long amount);
-    boolean withdraw(long amount);
+    void deposit(long amount) throws InvalidAmountException;
+    boolean withdraw(long amount) throws InsufficientFundsException, InvalidAmountException;
 }
 
 interface InterestBearing {
@@ -285,19 +330,38 @@ abstract class Account implements Transactable, InterestBearing {
     public abstract boolean canWithdraw(long amount);
 
     @Override
-    public void deposit(long amount) {
-        if (amount > 0) {
-            balance += amount;
+    public void deposit(long amount) throws InvalidAmountException {
+        if (amount <= 0) {
+            throw new InvalidAmountException("Deposit amount must be greater than zero.");
         }
+        balance += amount;
     }
 
     @Override
-    public boolean withdraw(long amount) {
-        if (amount > 0 && canWithdraw(amount)) {
-            balance -= amount;
-            return true;
+    public boolean withdraw(long amount) throws InsufficientFundsException, InvalidAmountException {
+        if (amount <= 0) {
+            throw new InvalidAmountException("Withdrawal amount must be greater than zero.");
         }
-        return false;
+        if (!canWithdraw(amount)) {
+            long shortfall = amount - balance;
+            throw new InsufficientFundsException("Withdrawal failed: insufficient balance.", max(0, shortfall));
+        }
+        balance -= amount;
+        return true;
+    }
+
+    public void transfer(Account to, long amount) throws BankException {
+        if (to == null) {
+            throw new AccountNotFoundException("Destination account not found.");
+        }
+        try {
+            this.withdraw(amount);
+            to.deposit(amount);
+        } catch (InsufficientFundsException | InvalidAmountException e) {
+            throw e;
+        } finally {
+            System.out.println("Transfer execution attempt finished from " + this.accountNumber + " to " + to.getAccountNumber());
+        }
     }
 
     public String getAccountNumber() {
@@ -420,16 +484,35 @@ public class MiniBank {
         BankInfo info = new BankInfo("State Bank", "Main Branch");
         System.out.println(info);
 
-        SavingsAccount invalidAcc = new SavingsAccount("Riya", -100, 1000);
-        System.out.println("\n--- Testing Custom Annotations via Reflection ---");
-        String[] errs = AnnotationValidator.validate(invalidAcc);
-        for (String err : errs) {
-            System.out.println("Validation Error on invalidAcc: " + err);
+        SavingsAccount acc1 = new SavingsAccount("Riya", 1000, 500);
+        SavingsAccount acc2 = new SavingsAccount("Aman", 2000, 500);
+
+        System.out.println("\n--- Testing Custom Exceptions ---");
+        try {
+            acc1.withdraw(5000);
+        } catch (InsufficientFundsException e) {
+            System.out.println("Caught InsufficientFundsException: " + e.getMessage() + " (Shortfall: Rs. " + e.getShortfall() + ")");
+        } catch (InvalidAmountException e) {
+            System.out.println("Caught InvalidAmountException: " + e.getMessage());
         }
 
-        SavingsAccount validAcc = new SavingsAccount("Aman", 5000, 1000);
-        String[] validErrs = AnnotationValidator.validate(validAcc);
-        System.out.println("Validation errors on validAcc: " + validErrs.length);
+        try {
+            acc1.deposit(-200);
+        } catch (InvalidAmountException e) {
+            System.out.println("Caught InvalidAmountException: " + e.getMessage());
+        }
+
+        try {
+            acc1.transfer(acc2, 300);
+            System.out.println("Transfer successful. Acc1 balance: " + acc1.getBalance() + ", Acc2 balance: " + acc2.getBalance());
+        } catch (BankException e) {
+            System.out.println("Transfer failed: " + e.getMessage());
+        }
+
+        System.out.println("\n--- Testing Try-With-Resources ---");
+        try (BankAuditSession session = new BankAuditSession("AUDIT-901")) {
+            System.out.println("Executing verified operations inside session...");
+        }
 
         Scanner sc = new Scanner(System.in);
         boolean loop = true;
