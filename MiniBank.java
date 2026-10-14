@@ -108,7 +108,7 @@ class AccountWorker implements Runnable {
         for (int i = 0; i < times; i++) {
             try {
                 account.deposit(amount);
-            } catch (InvalidAmountException e) {
+            } catch (InvalidAmountException ignored) {
             }
         }
     }
@@ -182,7 +182,6 @@ class StatePersister {
             }
             try (ObjectOutputStream oos = new ObjectOutputStream(new FileOutputStream(file.toFile()))) {
                 oos.writeObject(accounts);
-                System.out.println("Accounts successfully saved to " + file);
             }
         } catch (Exception e) {
             System.out.println("Error saving state: " + e.getMessage());
@@ -230,9 +229,6 @@ class ReportGenerator {
                 try (DirectoryStream<Path> stream = Files.newDirectoryStream(logsDir)) {
                     for (Path entry : stream) {
                         if (!Files.isDirectory(entry)) {
-                            BasicFileAttributes attr = Files.readAttributes(entry, BasicFileAttributes.class);
-                            System.out.println("Reading log: " + entry.getFileName() + " | Size: " + attr.size() + " bytes");
-
                             try (BufferedReader reader = Files.newBufferedReader(entry)) {
                                 String line;
                                 while ((line = reader.readLine()) != null) {
@@ -266,7 +262,6 @@ class ReportGenerator {
 
             Files.write(reportFile, sb.toString().getBytes(),
                     StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
-            System.out.println("Report written to " + reportFile);
             System.out.print(sb.toString());
 
         } catch (Exception e) {
@@ -381,6 +376,10 @@ enum MenuOption {
     DEPOSIT,
     WITHDRAW,
     TRANSFER,
+    STATEMENT,
+    LIST_ACCOUNTS,
+    BATCH_PROCESS,
+    RUN_REPORT,
     EXIT
 }
 
@@ -441,7 +440,7 @@ class AnnotationValidator {
                             }
                         }
                     }
-                } catch (IllegalAccessException e) {
+                } catch (IllegalAccessException ignored) {
                 }
             }
             clazz = clazz.getSuperclass();
@@ -500,6 +499,7 @@ class StatementFormatter {
         sb.append("====================================\n");
         sb.append("Account Number : ").append(account.getAccountNumber()).append("\n");
         sb.append("Account Holder : ").append(account.getOwnerName()).append("\n");
+        sb.append("Account Type   : ").append(account.getClass().getSimpleName()).append("\n");
         sb.append("Current Balance: Rs. ").append(account.getBalance()).append("\n");
         sb.append("Interest Rate  : ").append(account.interestRate()).append("%\n");
         sb.append("Yearly Interest: Rs. ").append(account.yearlyInterest(account.getBalance())).append("\n");
@@ -611,6 +611,10 @@ abstract class Account implements Transactable, InterestBearing, Serializable, C
     private boolean active;
     private static long accountCounter = 0;
 
+    public static void setCounter(long count) {
+        accountCounter = count;
+    }
+
     private static String generateAccountNumber() {
         accountCounter++;
         return String.format("AC%04d", accountCounter);
@@ -674,12 +678,8 @@ abstract class Account implements Transactable, InterestBearing, Serializable, C
 
         synchronized (firstLock) {
             synchronized (secondLock) {
-                try {
-                    this.withdraw(amount);
-                    to.deposit(amount);
-                } catch (InsufficientFundsException | InvalidAmountException e) {
-                    throw e;
-                }
+                this.withdraw(amount);
+                to.deposit(amount);
             }
         }
     }
@@ -702,7 +702,7 @@ abstract class Account implements Transactable, InterestBearing, Serializable, C
 
     @Override
     public String toString() {
-        return accountNumber + " | " + ownerName + " | " + balance;
+        return accountNumber + " | " + ownerName + " | Rs. " + balance;
     }
 
     @Override
@@ -793,87 +793,296 @@ class FixedDepositAccount extends Account {
     }
 }
 
+class BankService {
+    private final Repository<Account> repository;
+    private final Path logPath = Paths.get("logs", "transactions.log");
+
+    public BankService(Repository<Account> repository) {
+        this.repository = repository;
+    }
+
+    public Account openAccount(int type, String name, long openingBalance) throws BankException {
+        if (openingBalance <= 0) {
+            throw new InvalidAmountException("Opening balance must be positive.");
+        }
+
+        Account acc = switch (type) {
+            case 1 -> new SavingsAccount(name, openingBalance);
+            case 2 -> new CurrentAccount(name, openingBalance);
+            case 3 -> new FixedDepositAccount(name, openingBalance);
+            default -> throw new BankException("Invalid account type selected.");
+        };
+
+        repository.save(acc);
+        TransactionLog.append(logPath, "OPEN " + acc.getAccountNumber() + " " + openingBalance);
+        return acc;
+    }
+
+    public void deposit(String accNo, long amount) throws BankException {
+        Account acc = repository.findById(accNo);
+        if (acc == null) {
+            throw new AccountNotFoundException("Account " + accNo + " not found.");
+        }
+        acc.deposit(amount);
+        TransactionLog.append(logPath, "DEPOSIT " + accNo + " " + amount);
+    }
+
+    public void withdraw(String accNo, long amount) throws BankException {
+        Account acc = repository.findById(accNo);
+        if (acc == null) {
+            throw new AccountNotFoundException("Account " + accNo + " not found.");
+        }
+        acc.withdraw(amount);
+        TransactionLog.append(logPath, "WITHDRAW " + accNo + " " + amount);
+    }
+
+    public void transfer(String fromAccNo, String toAccNo, long amount) throws BankException {
+        Account from = repository.findById(fromAccNo);
+        Account to = repository.findById(toAccNo);
+
+        if (from == null) {
+            throw new AccountNotFoundException("Source account " + fromAccNo + " not found.");
+        }
+        if (to == null) {
+            throw new AccountNotFoundException("Destination account " + toAccNo + " not found.");
+        }
+
+        from.transfer(to, amount);
+        TransactionLog.append(logPath, "WITHDRAW " + fromAccNo + " " + amount);
+        TransactionLog.append(logPath, "DEPOSIT " + toAccNo + " " + amount);
+    }
+
+    public String statement(String accNo) throws BankException {
+        Account acc = repository.findById(accNo);
+        if (acc == null) {
+            throw new AccountNotFoundException("Account " + accNo + " not found.");
+        }
+        return StatementFormatter.buildStatement(acc);
+    }
+
+    public List<Account> listAccounts() {
+        List<Account> list = repository.findAll();
+        Collections.sort(list);
+        return list;
+    }
+
+    public void runBatch(TransactionProcessor processor, List<Command> commands) {
+        for (Account a : repository.findAll()) {
+            processor.registerAccount(a);
+        }
+
+        for (Command cmd : commands) {
+            processor.submit(() -> {
+                try {
+                    if (cmd.type() == TransactionType.DEPOSIT) {
+                        deposit(cmd.accountNumber(), cmd.amount());
+                    } else if (cmd.type() == TransactionType.WITHDRAW) {
+                        withdraw(cmd.accountNumber(), cmd.amount());
+                    }
+                } catch (BankException ignored) {
+                }
+            });
+        }
+    }
+}
+
 public class MiniBank {
+    private static final Path DATA_FILE = Paths.get("data", "accounts.dat");
+    private static final Path LOGS_DIR = Paths.get("logs");
+    private static final Path REPORT_FILE = Paths.get("reports", "daily_summary.txt");
+
     public static void printMenu() {
-        System.out.println("\n--- MiniBank Menu ---");
+        System.out.println("\n========== MINIBANK MANAGEMENT ==========");
         System.out.println("1. Open Account");
         System.out.println("2. Deposit");
         System.out.println("3. Withdraw");
         System.out.println("4. Transfer");
-        System.out.println("5. Exit");
-        System.out.print("Choose an option: ");
+        System.out.println("5. Account Statement");
+        System.out.println("6. List All Accounts");
+        System.out.println("7. Run Concurrent Batch Engine");
+        System.out.println("8. Generate End-of-Day Report");
+        System.out.println("9. Exit Application");
+        System.out.print("Enter choice (1-9): ");
+    }
+
+    public static void runUnitTests(BankService service, Repository<Account> repo) {
+        System.out.println("\n--- Running Built-in System Tests ---");
+        try {
+            Account testAcc = service.openAccount(1, "TestUser", 2000);
+            service.deposit(testAcc.getAccountNumber(), 500);
+            assert testAcc.getBalance() == 2500 : "Deposit test failed";
+            System.out.println("[PASS] Deposit updates balance correctly.");
+
+            boolean caught = false;
+            try {
+                service.withdraw(testAcc.getAccountNumber(), 10000);
+            } catch (InsufficientFundsException e) {
+                caught = true;
+            }
+            assert caught : "Overdraft test failed";
+            System.out.println("[PASS] Insufficient funds properly throws exception.");
+
+            Account concAcc = service.openAccount(1, "ConcUser", 0);
+            Thread[] workers = new Thread[5];
+            for (int i = 0; i < 5; i++) {
+                workers[i] = new Thread(new AccountWorker(concAcc, 200, 10));
+                workers[i].start();
+            }
+            for (Thread t : workers) {
+                t.join();
+            }
+            assert concAcc.getBalance() == 10000 : "Thread safety test failed";
+            System.out.println("[PASS] Concurrent multithreading preserves exact balance.");
+
+            repo.delete(testAcc.getAccountNumber());
+            repo.delete(concAcc.getAccountNumber());
+            System.out.println("[INFO] All unit test assertions passed.\n");
+        } catch (Exception e) {
+            System.out.println("[FAIL] Unit test failure: " + e.getMessage());
+        }
     }
 
     public static void main(String[] args) {
-        BankInfo info = new BankInfo("State Bank", "Main Branch");
-        System.out.println(info);
+        BankInfo info = new BankInfo("Charusat National Bank", "Changa Branch");
+        System.out.println("MiniBank Online Banking - " + info.name() + " (" + info.branch() + ")");
 
-        Repository<Account> accountRepo = new Repository<>();
-        SavingsAccount a1 = new SavingsAccount("Riya", 5000, 1000);
-        CurrentAccount a2 = new CurrentAccount("Aman", 2000, 3000);
-        FixedDepositAccount a3 = new FixedDepositAccount("Pooja", 12000);
+        Repository<Account> repository = new Repository<>();
 
-        System.out.println("\n--- Testing Generic Repository saveAll() with Reflection on @Id ---");
-        accountRepo.saveAll(a1, a2, a3);
-        System.out.println("Total items saved in account repo: " + accountRepo.count());
-
-        System.out.println("\n--- Testing Repository findById() ---");
-        Account fetched = accountRepo.findById(a2.getAccountNumber());
-        System.out.println("Fetched by ID " + a2.getAccountNumber() + ": " + fetched);
-
-        System.out.println("\n--- Testing Repository findAll() ---");
-        for (Account acc : accountRepo.findAll()) {
-            System.out.println("Repo item: " + acc);
+        Account[] loaded = StatePersister.load(DATA_FILE);
+        if (loaded.length > 0) {
+            repository.saveAll(loaded);
+            Account.setCounter(loaded.length);
+            System.out.println("Restored " + loaded.length + " accounts from persistence file.");
+        } else {
+            SavingsAccount sa = new SavingsAccount("Shivam", 5000, 1000);
+            CurrentAccount ca = new CurrentAccount("Riya", 8000, 3000);
+            repository.saveAll(sa, ca);
+            System.out.println("Initialized default repository accounts.");
         }
 
-        System.out.println("\n--- Testing Repository with Customer type ---");
-        Repository<Customer> customerRepo = new Repository<>();
-        Customer c1 = new Customer("Shivam", "shivam@bank.com", "9876543210");
-        Customer c2 = new Customer("Aarav", "aarav@bank.com", "9123456780");
-        customerRepo.saveAll(c1, c2);
-        System.out.println("Fetched customer by ID: " + customerRepo.findById(c1.getCustomerId()).getName());
-
-        System.out.println("\n--- Testing Generic Bounded Method average() ---");
-        Long[] balances = {5000L, 2000L, 12000L};
-        double avg = Repository.average(balances);
-        System.out.println("Average balance: Rs. " + avg);
+        BankService service = new BankService(repository);
+        runUnitTests(service, repository);
 
         Scanner sc = new Scanner(System.in);
-        boolean loop = true;
+        boolean running = true;
 
-        while (loop) {
+        while (running) {
             printMenu();
             if (!sc.hasNextInt()) {
-                System.out.println("Please enter a valid number.");
+                System.out.println("Invalid numeric input. Please try again.");
                 sc.next();
                 continue;
             }
 
-            int ch = sc.nextInt();
+            int choice = sc.nextInt();
+            sc.nextLine();
 
-            MenuOption opt = switch (ch) {
+            MenuOption opt = switch (choice) {
                 case 1 -> MenuOption.OPEN_ACCOUNT;
                 case 2 -> MenuOption.DEPOSIT;
                 case 3 -> MenuOption.WITHDRAW;
                 case 4 -> MenuOption.TRANSFER;
-                case 5 -> MenuOption.EXIT;
+                case 5 -> MenuOption.STATEMENT;
+                case 6 -> MenuOption.LIST_ACCOUNTS;
+                case 7 -> MenuOption.BATCH_PROCESS;
+                case 8 -> MenuOption.RUN_REPORT;
+                case 9 -> MenuOption.EXIT;
                 default -> null;
             };
 
             if (opt == null) {
-                System.out.println("Invalid option, try again.");
+                System.out.println("Invalid menu choice. Select between 1 and 9.");
                 continue;
             }
 
-            switch (opt) {
-                case OPEN_ACCOUNT -> System.out.println("Open Account - to be implemented in a later lab");
-                case DEPOSIT -> System.out.println("Deposit - to be implemented in a later lab");
-                case WITHDRAW -> System.out.println("Withdraw - to be implemented in a later lab");
-                case TRANSFER -> System.out.println("Transfer - to be implemented in a later lab");
-                case EXIT -> {
-                    System.out.println("Exiting MiniBank. Thank you!");
-                    loop = false;
+            try {
+                switch (opt) {
+                    case OPEN_ACCOUNT -> {
+                        System.out.println("\nSelect Account Type: 1. Savings | 2. Current | 3. Fixed Deposit");
+                        int type = sc.nextInt();
+                        sc.nextLine();
+                        System.out.print("Enter customer name: ");
+                        String name = sc.nextLine().trim();
+                        System.out.print("Enter opening balance: ");
+                        long bal = sc.nextLong();
+                        Account created = service.openAccount(type, name, bal);
+                        System.out.println("Account opened successfully: " + created);
+                    }
+                    case DEPOSIT -> {
+                        System.out.print("Enter Account Number: ");
+                        String accNo = sc.nextLine().trim().toUpperCase();
+                        System.out.print("Enter deposit amount: ");
+                        long amt = sc.nextLong();
+                        service.deposit(accNo, amt);
+                        System.out.println("Deposit of Rs. " + amt + " completed.");
+                    }
+                    case WITHDRAW -> {
+                        System.out.print("Enter Account Number: ");
+                        String accNo = sc.nextLine().trim().toUpperCase();
+                        System.out.print("Enter withdrawal amount: ");
+                        long amt = sc.nextLong();
+                        service.withdraw(accNo, amt);
+                        System.out.println("Withdrawal of Rs. " + amt + " completed.");
+                    }
+                    case TRANSFER -> {
+                        System.out.print("Enter Source Account Number: ");
+                        String from = sc.nextLine().trim().toUpperCase();
+                        System.out.print("Enter Destination Account Number: ");
+                        String to = sc.nextLine().trim().toUpperCase();
+                        System.out.print("Enter transfer amount: ");
+                        long amt = sc.nextLong();
+                        service.transfer(from, to, amt);
+                        System.out.println("Transfer of Rs. " + amt + " successful.");
+                    }
+                    case STATEMENT -> {
+                        System.out.print("Enter Account Number: ");
+                        String accNo = sc.nextLine().trim().toUpperCase();
+                        System.out.println(service.statement(accNo));
+                    }
+                    case LIST_ACCOUNTS -> {
+                        System.out.println("\n--- All Registered Bank Accounts ---");
+                        List<Account> accounts = service.listAccounts();
+                        if (accounts.isEmpty()) {
+                            System.out.println("No accounts found.");
+                        } else {
+                            for (Account a : accounts) {
+                                System.out.println(a);
+                            }
+                        }
+                    }
+                    case BATCH_PROCESS -> {
+                        System.out.println("Executing multithreaded transaction batch via thread pool...");
+                        TransactionProcessor tp = new TransactionProcessor(4);
+                        List<Command> batch = new ArrayList<>();
+                        List<Account> current = service.listAccounts();
+                        if (!current.isEmpty()) {
+                            String target = current.get(0).getAccountNumber();
+                            batch.add(new Command(TransactionType.DEPOSIT, target, 200));
+                            batch.add(new Command(TransactionType.DEPOSIT, target, 300));
+                            batch.add(new Command(TransactionType.WITHDRAW, target, 100));
+                        }
+                        service.runBatch(tp, batch);
+                        tp.stop();
+                        System.out.println("Batch processing successfully finished.");
+                    }
+                    case RUN_REPORT -> {
+                        System.out.println("\nGenerating End-of-Day audit report from NIO directory logs:");
+                        ReportGenerator.generateReport(LOGS_DIR, REPORT_FILE);
+                    }
+                    case EXIT -> {
+                        List<Account> all = repository.findAll();
+                        StatePersister.save(all.toArray(new Account[0]), DATA_FILE);
+                        System.out.println("Persisted " + all.size() + " accounts to " + DATA_FILE);
+                        System.out.println("Thank you for using MiniBank. System terminated.");
+                        running = false;
+                    }
                 }
+            } catch (InsufficientFundsException e) {
+                System.out.println("Transaction Error: " + e.getMessage() + " (Shortfall: Rs. " + e.getShortfall() + ")");
+            } catch (BankException e) {
+                System.out.println("Banking Error: " + e.getMessage());
+            } catch (Exception e) {
+                System.out.println("Unexpected system error: " + e.getMessage());
             }
         }
         sc.close();
