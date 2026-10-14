@@ -17,7 +17,6 @@ import java.nio.file.StandardOpenOption;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.util.ArrayList;
 import java.util.Collections;
-import java.util.Comparator;
 import java.util.HashMap;
 import java.util.LinkedList;
 import java.util.List;
@@ -307,6 +306,71 @@ class AccountStore {
         List<Account> list = new ArrayList<>(accounts.values());
         list.sort((a1, a2) -> Long.compare(a2.getBalance(), a1.getBalance()));
         return list;
+    }
+}
+
+class Repository<T> {
+    private final HashMap<String, T> storage = new HashMap<>();
+
+    private String extractId(T entity) {
+        Class<?> clazz = entity.getClass();
+        while (clazz != null && clazz != Object.class) {
+            for (Field field : clazz.getDeclaredFields()) {
+                if (field.isAnnotationPresent(Id.class)) {
+                    field.setAccessible(true);
+                    try {
+                        Object val = field.get(entity);
+                        return val != null ? val.toString() : null;
+                    } catch (IllegalAccessException e) {
+                        return null;
+                    }
+                }
+            }
+            clazz = clazz.getSuperclass();
+        }
+        return null;
+    }
+
+    public T save(T entity) {
+        if (entity == null) return null;
+        String id = extractId(entity);
+        if (id != null) {
+            storage.put(id, entity);
+            return entity;
+        }
+        return null;
+    }
+
+    @SafeVarargs
+    public final void saveAll(T... items) {
+        for (T item : items) {
+            save(item);
+        }
+    }
+
+    public T findById(String id) {
+        return storage.get(id);
+    }
+
+    public ArrayList<T> findAll() {
+        return new ArrayList<>(storage.values());
+    }
+
+    public boolean delete(String id) {
+        return storage.remove(id) != null;
+    }
+
+    public int count() {
+        return storage.size();
+    }
+
+    public static <N extends Number> double average(N[] values) {
+        if (values == null || values.length == 0) return 0.0;
+        double sum = 0.0;
+        for (N val : values) {
+            sum += val.doubleValue();
+        }
+        return sum / values.length;
     }
 }
 
@@ -744,38 +808,35 @@ public class MiniBank {
         BankInfo info = new BankInfo("State Bank", "Main Branch");
         System.out.println(info);
 
-        AccountStore store = new AccountStore();
-        SavingsAccount acc1 = new SavingsAccount("Riya", 5000, 1000);
-        CurrentAccount acc2 = new CurrentAccount("Aman", 2000, 3000);
-        FixedDepositAccount acc3 = new FixedDepositAccount("Pooja", 9000);
+        Repository<Account> accountRepo = new Repository<>();
+        SavingsAccount a1 = new SavingsAccount("Riya", 5000, 1000);
+        CurrentAccount a2 = new CurrentAccount("Aman", 2000, 3000);
+        FixedDepositAccount a3 = new FixedDepositAccount("Pooja", 12000);
 
-        store.add(acc1);
-        store.add(acc2);
-        store.add(acc3);
+        System.out.println("\n--- Testing Generic Repository saveAll() with Reflection on @Id ---");
+        accountRepo.saveAll(a1, a2, a3);
+        System.out.println("Total items saved in account repo: " + accountRepo.count());
 
-        System.out.println("\n--- Testing AccountStore get() ---");
-        Account fetched = store.get(acc2.getAccountNumber());
-        System.out.println("Fetched account: " + fetched);
+        System.out.println("\n--- Testing Repository findById() ---");
+        Account fetched = accountRepo.findById(a2.getAccountNumber());
+        System.out.println("Fetched by ID " + a2.getAccountNumber() + ": " + fetched);
 
-        System.out.println("\n--- Testing Accounts Sorted By Balance (Highest First) ---");
-        List<Account> sortedList = store.sortedByBalance();
-        for (Account a : sortedList) {
-            System.out.println(a);
+        System.out.println("\n--- Testing Repository findAll() ---");
+        for (Account acc : accountRepo.findAll()) {
+            System.out.println("Repo item: " + acc);
         }
 
-        System.out.println("\n--- Testing Comparable natural order (compareTo) ---");
-        List<Account> naturalOrderList = store.getAll();
-        Collections.sort(naturalOrderList);
-        for (Account a : naturalOrderList) {
-            System.out.println("Sorted by accNo: " + a.getAccountNumber() + " | " + a.getOwnerName());
-        }
+        System.out.println("\n--- Testing Repository with Customer type ---");
+        Repository<Customer> customerRepo = new Repository<>();
+        Customer c1 = new Customer("Shivam", "shivam@bank.com", "9876543210");
+        Customer c2 = new Customer("Aarav", "aarav@bank.com", "9123456780");
+        customerRepo.saveAll(c1, c2);
+        System.out.println("Fetched customer by ID: " + customerRepo.findById(c1.getCustomerId()).getName());
 
-        System.out.println("\n--- Testing ConcurrentHashMap in TransactionProcessor ---");
-        TransactionProcessor tp = new TransactionProcessor(2);
-        tp.registerAccount(acc1);
-        tp.registerAccount(acc2);
-        System.out.println("Retrieved from concurrent processor: " + tp.getAccount(acc1.getAccountNumber()));
-        tp.stop();
+        System.out.println("\n--- Testing Generic Bounded Method average() ---");
+        Long[] balances = {5000L, 2000L, 12000L};
+        double avg = Repository.average(balances);
+        System.out.println("Average balance: Rs. " + avg);
 
         Scanner sc = new Scanner(System.in);
         boolean loop = true;
