@@ -1,8 +1,20 @@
+import java.io.BufferedReader;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
+import java.io.ObjectInputStream;
+import java.io.ObjectOutputStream;
+import java.io.Serializable;
 import java.lang.annotation.ElementType;
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.lang.annotation.Target;
 import java.lang.reflect.Field;
+import java.nio.file.DirectoryStream;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.nio.file.StandardOpenOption;
+import java.nio.file.attribute.BasicFileAttributes;
 import java.util.ArrayList;
 import java.util.LinkedList;
 import java.util.List;
@@ -149,6 +161,107 @@ class TransactionBuffer {
     }
 }
 
+class StatePersister {
+    public static void save(Account[] accounts, Path file) {
+        try {
+            if (file.getParent() != null) {
+                Files.createDirectories(file.getParent());
+            }
+            try (ObjectOutputStream oos = new ObjectOutputStream(new FileOutputStream(file.toFile()))) {
+                oos.writeObject(accounts);
+                System.out.println("Accounts successfully saved to " + file);
+            }
+        } catch (Exception e) {
+            System.out.println("Error saving state: " + e.getMessage());
+        }
+    }
+
+    public static Account[] load(Path file) {
+        if (!Files.exists(file)) {
+            return new Account[0];
+        }
+        try (ObjectInputStream ois = new ObjectInputStream(new FileInputStream(file.toFile()))) {
+            return (Account[]) ois.readObject();
+        } catch (Exception e) {
+            System.out.println("Error loading state: " + e.getMessage());
+            return new Account[0];
+        }
+    }
+}
+
+class TransactionLog {
+    public static void append(Path file, String line) {
+        try {
+            if (file.getParent() != null) {
+                Files.createDirectories(file.getParent());
+            }
+            Files.write(file, (line + System.lineSeparator()).getBytes(),
+                    StandardOpenOption.CREATE, StandardOpenOption.APPEND);
+        } catch (Exception e) {
+            System.out.println("Error appending to log: " + e.getMessage());
+        }
+    }
+}
+
+class ReportGenerator {
+    public static void generateReport(Path logsDir, Path reportFile) {
+        long totalDeposits = 0;
+        long totalWithdrawals = 0;
+
+        try {
+            if (reportFile.getParent() != null) {
+                Files.createDirectories(reportFile.getParent());
+            }
+
+            if (Files.exists(logsDir)) {
+                try (DirectoryStream<Path> stream = Files.newDirectoryStream(logsDir)) {
+                    for (Path entry : stream) {
+                        if (!Files.isDirectory(entry)) {
+                            BasicFileAttributes attr = Files.readAttributes(entry, BasicFileAttributes.class);
+                            System.out.println("Reading log: " + entry.getFileName() + " | Size: " + attr.size() + " bytes");
+
+                            try (BufferedReader reader = Files.newBufferedReader(entry)) {
+                                String line;
+                                while ((line = reader.readLine()) != null) {
+                                    String[] parts = line.trim().split("\\s+");
+                                    if (parts.length >= 3) {
+                                        try {
+                                            long amt = Long.parseLong(parts[2]);
+                                            if (parts[0].equalsIgnoreCase("DEPOSIT")) {
+                                                totalDeposits += amt;
+                                            } else if (parts[0].equalsIgnoreCase("WITHDRAW")) {
+                                                totalWithdrawals += amt;
+                                            }
+                                        } catch (NumberFormatException ignored) {
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            StringBuilder sb = new StringBuilder();
+            sb.append("====================================\n");
+            sb.append("         END-OF-DAY REPORT          \n");
+            sb.append("====================================\n");
+            sb.append("Total Deposits    : Rs. ").append(totalDeposits).append("\n");
+            sb.append("Total Withdrawals : Rs. ").append(totalWithdrawals).append("\n");
+            sb.append("Net Cashflow      : Rs. ").append(totalDeposits - totalWithdrawals).append("\n");
+            sb.append("====================================\n");
+
+            Files.write(reportFile, sb.toString().getBytes(),
+                    StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
+            System.out.println("Report written to " + reportFile);
+            System.out.print(sb.toString());
+
+        } catch (Exception e) {
+            System.out.println("Error generating report: " + e.getMessage());
+        }
+    }
+}
+
 record BankInfo(String name, String branch) {}
 
 enum MenuOption {
@@ -284,7 +397,9 @@ class StatementFormatter {
     }
 }
 
-class Customer implements Cloneable {
+class Customer implements Cloneable, Serializable {
+    private static final long serialVersionUID = 1L;
+
     @Id
     private final String customerId;
     @MaxLength(50)
@@ -294,7 +409,9 @@ class Customer implements Cloneable {
     private Address address;
     private static long customerCounter = 100;
 
-    public static class Address {
+    public static class Address implements Serializable {
+        private static final long serialVersionUID = 1L;
+
         private String line;
         private String city;
         private String pincode;
@@ -370,7 +487,9 @@ class Customer implements Cloneable {
     }
 }
 
-abstract class Account implements Transactable, InterestBearing {
+abstract class Account implements Transactable, InterestBearing, Serializable {
+    private static final long serialVersionUID = 1L;
+
     @Id
     private final String accountNumber;
     @MaxLength(50)
@@ -484,6 +603,7 @@ abstract class Account implements Transactable, InterestBearing {
 }
 
 class SavingsAccount extends Account {
+    private static final long serialVersionUID = 1L;
     private long minBalance;
 
     public SavingsAccount(String ownerName, long balance, long minBalance) {
@@ -511,6 +631,7 @@ class SavingsAccount extends Account {
 }
 
 class CurrentAccount extends Account implements Premium {
+    private static final long serialVersionUID = 1L;
     private long overdraftLimit;
 
     public CurrentAccount(String ownerName, long balance, long overdraftLimit) {
@@ -538,6 +659,8 @@ class CurrentAccount extends Account implements Premium {
 }
 
 class FixedDepositAccount extends Account {
+    private static final long serialVersionUID = 1L;
+
     public FixedDepositAccount(String ownerName, long balance) {
         super(ownerName, balance);
     }
@@ -568,80 +691,32 @@ public class MiniBank {
         BankInfo info = new BankInfo("State Bank", "Main Branch");
         System.out.println(info);
 
-        SavingsAccount poolAcc = new SavingsAccount("PoolTest", 1000, 0);
-        TransactionProcessor tp = new TransactionProcessor(4);
+        Path dataFile = Paths.get("data", "accounts.dat");
+        Path logsDir = Paths.get("logs");
+        Path logFile = logsDir.resolve("transactions.log");
+        Path reportFile = Paths.get("reports", "daily_summary.txt");
 
-        System.out.println("\n--- Running Thread Pool Transactions ---");
-        for (int i = 0; i < 8; i++) {
-            final int id = i + 1;
-            tp.submit(() -> {
-                try {
-                    poolAcc.deposit(100);
-                    System.out.println("Task " + id + " deposited 100 by " + Thread.currentThread().getName());
-                } catch (InvalidAmountException e) {
-                }
-            });
-        }
-        tp.stop();
-        System.out.println("Balance after pool tasks: Rs. " + poolAcc.getBalance());
+        Account[] sampleAccounts = new Account[3];
+        sampleAccounts[0] = new SavingsAccount("Riya", 5000, 1000);
+        sampleAccounts[1] = new CurrentAccount("Aman", 4000, 2000);
+        sampleAccounts[2] = new FixedDepositAccount("Pooja", 15000);
 
-        System.out.println("\n--- Running Producer-Consumer Queue ---");
-        TransactionBuffer buffer = new TransactionBuffer(2);
-        Thread producer = new Thread(() -> {
-            try {
-                buffer.produce("TX_DEP_100");
-                buffer.produce("TX_WDR_50");
-                buffer.produce("TX_TRF_30");
-            } catch (InterruptedException e) {
-            }
-        });
+        System.out.println("\n--- Saving & Loading Account State ---");
+        StatePersister.save(sampleAccounts, dataFile);
 
-        Thread consumer = new Thread(() -> {
-            try {
-                for (int i = 0; i < 3; i++) {
-                    buffer.consume();
-                }
-            } catch (InterruptedException e) {
-            }
-        });
-
-        producer.start();
-        consumer.start();
-
-        try {
-            producer.join();
-            consumer.join();
-        } catch (InterruptedException e) {
+        Account[] reloadedAccounts = StatePersister.load(dataFile);
+        System.out.println("Loaded " + reloadedAccounts.length + " accounts from storage:");
+        for (Account a : reloadedAccounts) {
+            System.out.println("Reloaded: " + a);
         }
 
-        System.out.println("\n--- Testing Deadlock-Free Transfer ---");
-        SavingsAccount a = new SavingsAccount("Alice", 5000, 0);
-        SavingsAccount b = new SavingsAccount("Bob", 5000, 0);
+        System.out.println("\n--- Writing Transaction Logs & Generating Report ---");
+        TransactionLog.append(logFile, "DEPOSIT AC0001 500");
+        TransactionLog.append(logFile, "WITHDRAW AC0002 200");
+        TransactionLog.append(logFile, "DEPOSIT AC0003 1200");
+        TransactionLog.append(logFile, "WITHDRAW AC0001 300");
 
-        Thread t1 = new Thread(() -> {
-            try {
-                a.transfer(b, 500);
-            } catch (BankException e) {
-            }
-        });
-
-        Thread t2 = new Thread(() -> {
-            try {
-                b.transfer(a, 300);
-            } catch (BankException e) {
-            }
-        });
-
-        t1.start();
-        t2.start();
-
-        try {
-            t1.join();
-            t2.join();
-        } catch (InterruptedException e) {
-        }
-
-        System.out.println("Transfer complete without deadlock. Balances: Alice=" + a.getBalance() + ", Bob=" + b.getBalance());
+        ReportGenerator.generateReport(logsDir, reportFile);
 
         Scanner sc = new Scanner(System.in);
         boolean loop = true;
