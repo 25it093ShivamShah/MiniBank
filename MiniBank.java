@@ -16,11 +16,16 @@ import java.nio.file.Paths;
 import java.nio.file.StandardOpenOption;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Comparator;
+import java.util.HashMap;
 import java.util.LinkedList;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Queue;
 import java.util.Scanner;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -112,9 +117,18 @@ class AccountWorker implements Runnable {
 
 class TransactionProcessor {
     private final ExecutorService executor;
+    private final ConcurrentHashMap<String, Account> sharedAccounts = new ConcurrentHashMap<>();
 
     public TransactionProcessor(int poolSize) {
         this.executor = Executors.newFixedThreadPool(poolSize);
+    }
+
+    public void registerAccount(Account acc) {
+        sharedAccounts.put(acc.getAccountNumber(), acc);
+    }
+
+    public Account getAccount(String accNo) {
+        return sharedAccounts.get(accNo);
     }
 
     public void submit(Runnable task) {
@@ -259,6 +273,40 @@ class ReportGenerator {
         } catch (Exception e) {
             System.out.println("Error generating report: " + e.getMessage());
         }
+    }
+}
+
+class AccountStore {
+    private final Map<String, Account> accounts = new HashMap<>();
+    private final List<String> transactionHistory = new ArrayList<>();
+
+    public void add(Account account) {
+        if (account != null) {
+            accounts.put(account.getAccountNumber(), account);
+            transactionHistory.add("Added account: " + account.getAccountNumber());
+        }
+    }
+
+    public Account get(String accountNumber) {
+        return accounts.get(accountNumber);
+    }
+
+    public List<Account> getAll() {
+        return new ArrayList<>(accounts.values());
+    }
+
+    public void logTransaction(String log) {
+        transactionHistory.add(log);
+    }
+
+    public List<String> getHistory() {
+        return new ArrayList<>(transactionHistory);
+    }
+
+    public List<Account> sortedByBalance() {
+        List<Account> list = new ArrayList<>(accounts.values());
+        list.sort((a1, a2) -> Long.compare(a2.getBalance(), a1.getBalance()));
+        return list;
     }
 }
 
@@ -487,7 +535,7 @@ class Customer implements Cloneable, Serializable {
     }
 }
 
-abstract class Account implements Transactable, InterestBearing, Serializable {
+abstract class Account implements Transactable, InterestBearing, Serializable, Comparable<Account> {
     private static final long serialVersionUID = 1L;
 
     @Id
@@ -520,6 +568,11 @@ abstract class Account implements Transactable, InterestBearing, Serializable {
 
     public Account(String ownerName) {
         this(ownerName, 0);
+    }
+
+    @Override
+    public int compareTo(Account other) {
+        return this.accountNumber.compareTo(other.accountNumber);
     }
 
     @Override
@@ -691,32 +744,38 @@ public class MiniBank {
         BankInfo info = new BankInfo("State Bank", "Main Branch");
         System.out.println(info);
 
-        Path dataFile = Paths.get("data", "accounts.dat");
-        Path logsDir = Paths.get("logs");
-        Path logFile = logsDir.resolve("transactions.log");
-        Path reportFile = Paths.get("reports", "daily_summary.txt");
+        AccountStore store = new AccountStore();
+        SavingsAccount acc1 = new SavingsAccount("Riya", 5000, 1000);
+        CurrentAccount acc2 = new CurrentAccount("Aman", 2000, 3000);
+        FixedDepositAccount acc3 = new FixedDepositAccount("Pooja", 9000);
 
-        Account[] sampleAccounts = new Account[3];
-        sampleAccounts[0] = new SavingsAccount("Riya", 5000, 1000);
-        sampleAccounts[1] = new CurrentAccount("Aman", 4000, 2000);
-        sampleAccounts[2] = new FixedDepositAccount("Pooja", 15000);
+        store.add(acc1);
+        store.add(acc2);
+        store.add(acc3);
 
-        System.out.println("\n--- Saving & Loading Account State ---");
-        StatePersister.save(sampleAccounts, dataFile);
+        System.out.println("\n--- Testing AccountStore get() ---");
+        Account fetched = store.get(acc2.getAccountNumber());
+        System.out.println("Fetched account: " + fetched);
 
-        Account[] reloadedAccounts = StatePersister.load(dataFile);
-        System.out.println("Loaded " + reloadedAccounts.length + " accounts from storage:");
-        for (Account a : reloadedAccounts) {
-            System.out.println("Reloaded: " + a);
+        System.out.println("\n--- Testing Accounts Sorted By Balance (Highest First) ---");
+        List<Account> sortedList = store.sortedByBalance();
+        for (Account a : sortedList) {
+            System.out.println(a);
         }
 
-        System.out.println("\n--- Writing Transaction Logs & Generating Report ---");
-        TransactionLog.append(logFile, "DEPOSIT AC0001 500");
-        TransactionLog.append(logFile, "WITHDRAW AC0002 200");
-        TransactionLog.append(logFile, "DEPOSIT AC0003 1200");
-        TransactionLog.append(logFile, "WITHDRAW AC0001 300");
+        System.out.println("\n--- Testing Comparable natural order (compareTo) ---");
+        List<Account> naturalOrderList = store.getAll();
+        Collections.sort(naturalOrderList);
+        for (Account a : naturalOrderList) {
+            System.out.println("Sorted by accNo: " + a.getAccountNumber() + " | " + a.getOwnerName());
+        }
 
-        ReportGenerator.generateReport(logsDir, reportFile);
+        System.out.println("\n--- Testing ConcurrentHashMap in TransactionProcessor ---");
+        TransactionProcessor tp = new TransactionProcessor(2);
+        tp.registerAccount(acc1);
+        tp.registerAccount(acc2);
+        System.out.println("Retrieved from concurrent processor: " + tp.getAccount(acc1.getAccountNumber()));
+        tp.stop();
 
         Scanner sc = new Scanner(System.in);
         boolean loop = true;
